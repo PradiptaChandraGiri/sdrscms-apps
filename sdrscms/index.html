@@ -1,14 +1,1134 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SDRSCMS | Smart Disaster Relief Supply Chain Management System</title>
-  </head>
-  <body>
-    <div id="root"></div>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SDRSCMS - Disaster Relief Supply Chain Management System</title>
+    <!-- Load Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load React and ReactDOM UMD builds -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <!-- Load Babel Standalone to process JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
+    <style>
+        /* Custom styles to ensure full height and smooth transitions */
+        .min-h-screen {
+            min-height: 100vh;
+        }
+        .animate-pulse-slow {
+            animation: pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: .5; }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 font-sans">
+    <div id="root">
+        <!-- React app will render here -->
+        <div class="min-h-screen flex items-center justify-center">
+            <p class="text-xl text-indigo-600 animate-pulse">Loading Application...</p>
+        </div>
+    </div>
+
+    <script type="text/babel">
+        // --- STUDENT PROJECT DETAILS ---
+        const STUDENT_NAME = "Pradipta Chandra Giri";
+        const REG_NUMBER = "2402110050";
+        const BRANCH_SUBJECT = "Computer Science and Engineering (Data Structures)";
+        // --- END STUDENT DETAILS ---
+
+        const { useState, useEffect, useMemo, useCallback } = React;
+        const ReactDOM = window.ReactDOM;
+
+        // --- GEMINI API INTEGRATION ---
+        const API_KEY = ""; // Placeholder for Canvas environment
+        const GEMINI_FLASH_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent";
+
+        /**
+         * Calls the Gemini API with exponential backoff.
+         */
+        const callGeminiAPI = async (userQuery, systemPrompt, maxRetries = 3) => {
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+            };
+
+            for (let attempt = 0; attempt < maxRetries; attempt++) {
+                try {
+                    const response = await fetch(`${GEMINI_FLASH_API_URL}?key=${API_KEY}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                    });
+
+                    if (response.status === 429 && attempt < maxRetries - 1) {
+                        const delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        continue; // Retry
+                    }
+
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        try {
+                            const errorData = JSON.parse(errorText);
+                            throw new Error(errorData.error?.message || `API call failed with status: ${response.status}`);
+                        } catch {
+                            throw new Error(`API call failed with status: ${response.status}. Response: ${errorText.substring(0, 100)}...`);
+                        }
+                    }
+
+                    const result = await response.json();
+                    return result.candidates?.[0]?.content?.parts?.[0]?.text || "Gemini did not return text content.";
+                } catch (error) {
+                    if (attempt === maxRetries - 1) {
+                        console.error("Gemini API Error after retries:", error);
+                        throw new Error(`Failed to generate content: ${error.message}`);
+                    }
+                }
+            }
+            return "Error: Maximum API retry attempts reached.";
+        };
+        // --- END GEMINI API INTEGRATION ---
+
+
+        // --- MOCK DATA STRUCTURES & CORE LOGIC IMPLEMENTATION ---
+
+        // 1. Queue (FIFO) for Supplies
+        const useSupplyQueue = (initialItems = []) => {
+            const [queue, setQueue] = useState(initialItems);
+
+            const enqueue = (item) => {
+                setQueue(prev => [...prev, { ...item, arrivedAt: new Date().toISOString() }]);
+            };
+
+            const dequeue = () => {
+                if (queue.length === 0) return null;
+                const [next, ...rest] = queue;
+                setQueue(rest);
+                return next;
+            };
+
+            return { queue, enqueue, dequeue, size: queue.length, isEmpty: queue.length === 0 };
+        };
+
+        // 2. Priority Queue (Requests)
+        const useRequestPriorityQueue = (initialItems = []) => {
+            const [requests, setRequests] = useState(initialItems);
+
+            const sortRequests = useCallback((items) => {
+                // Priority: 5 (Urgent) > 4 (High) > 3 (Medium) > 2 (Low) > 1 (Minimal)
+                return [...items].sort((a, b) => {
+                    if (b.priority !== a.priority) {
+                        return b.priority - a.priority;
+                    }
+                    return new Date(a.requestDate) - new Date(b.requestDate);
+                });
+            }, []);
+
+            const insertRequest = (request) => {
+                setRequests(prev => sortRequests([...prev, request]));
+            };
+
+            const updateRequestStatus = (id, newStatus) => {
+                setRequests(prev => sortRequests(prev.map(req => 
+                    req.id === id ? { ...req, status: newStatus, statusDate: new Date().toISOString() } : req
+                )));
+            };
+            
+            const urgentRequests = useMemo(() => requests.filter(r => r.priority >= 4 && r.status === 'Pending'), [requests]);
+
+            return { requests, insertRequest, updateRequestStatus, urgentRequests, size: requests.length };
+        };
+
+        // 3. Stack (LIFO) for Undo/Dispatch Logs
+        const useDispatchStack = (initialLogs = []) => {
+            const [logs, setLogs] = useState(initialLogs);
+
+            const pushLog = (log) => {
+                setLogs(prev => [...prev, { ...log, timestamp: new Date().toISOString() }]);
+            };
+
+            const popLog = () => {
+                if (logs.length === 0) return null;
+                const lastLog = logs[logs.length - 1];
+                setLogs(prev => prev.slice(0, -1));
+                return lastLog;
+            };
+
+            return { logs, pushLog, popLog, size: logs.length };
+        };
+
+        // 4. Graph/Dijkstra Simulation for Routing
+        const MOCK_GRAPH = {
+            'Center A': { 'Camp X': 100, 'Camp Y': 250 },
+            'Center B': { 'Camp Z': 120, 'Camp Y': 150 },
+            'Camp X': { 'Center A': 100, 'Camp Y': 50 },
+            'Camp Y': { 'Center A': 250, 'Center B': 150, 'Camp X': 50, 'Camp Z': 300 },
+            'Camp Z': { 'Center B': 120, 'Camp Y': 300 },
+        };
+
+        const dijkstraShortestPath = (startNode, endNode) => {
+            if (!MOCK_GRAPH[startNode] || !MOCK_GRAPH[endNode]) {
+                return { distance: 'N/A', route: 'Not found (Invalid nodes)' };
+            }
+
+            // Simplified simulation logic
+            if (startNode === 'Center A' && endNode === 'Camp Z') {
+                return { distance: '370 km', route: 'Center A → Camp Y → Camp Z', duration: '5h 30m' };
+            }
+            if (startNode === 'Center B' && endNode === 'Camp X') {
+                return { distance: '270 km', route: 'Center B → Camp Y → Camp X', duration: '4h 00m' };
+            }
+            
+            const directDistance = MOCK_GRAPH[startNode][endNode];
+            if (directDistance) {
+                return { distance: `${directDistance} km`, route: `${startNode} → ${endNode}`, duration: `${Math.round(directDistance / 70 * 60)} min` };
+            }
+
+            return { distance: '420 km (Simulated)', route: `${startNode} → ... → ${endNode}`, duration: '6h 15m' };
+        };
+
+
+        // --- MOCK DATA ---
+        const INITIAL_SUPPLIES = [
+            { id: 101, type: 'Water', quantity: 5000, center_id: 1, arrivedAt: '2025-10-25T10:00:00Z' },
+            { id: 102, type: 'Blankets', quantity: 200, center_id: 2, arrivedAt: '2025-10-25T14:30:00Z' },
+            { id: 103, type: 'Meds', quantity: 150, center_id: 1, arrivedAt: '2025-10-26T08:00:00Z' },
+        ];
+
+        const INITIAL_REQUESTS = [
+            { id: 1, camp_id: 'Camp X', type: 'Food', qty: 300, priority: 5, status: 'Pending', requestDate: '2025-10-26T12:00:00Z' },
+            { id: 2, camp_id: 'Camp Z', type: 'Water', qty: 1000, priority: 3, status: 'Pending', requestDate: '2025-10-26T14:00:00Z' },
+            { id: 3, camp_id: 'Camp Y', type: 'Tents', qty: 50, priority: 4, status: 'Dispatched', requestDate: '2025-10-25T09:00:00Z', center_id: 2 },
+            { id: 4, camp_id: 'Camp X', type: 'Meds', qty: 25, priority: 5, status: 'Pending', requestDate: '2025-10-26T15:30:00Z' },
+        ];
+
+        const LOCATIONS = [
+            { id: 1, name: 'Center A', type: 'Center', lat: 34.0522, lng: -118.2437, capacity: 5000 },
+            { id: 2, name: 'Center B', type: 'Center', lat: 34.1, lng: -118.3, capacity: 8000 },
+            { id: 3, name: 'Camp X', type: 'Camp', lat: 34.15, lng: -118.4, population: 1500 },
+            { id: 4, name: 'Camp Y', type: 'Camp', lat: 33.9, lng: -118.0, population: 3000 },
+            { id: 5, name: 'Camp Z', type: 'Camp', lat: 34.2, lng: -118.1, population: 800 },
+        ];
+
+        const ROLES = {
+            ADMIN: 'Admin',
+            FIELDOFFICER: 'Field Officer',
+            CAMPMANAGER: 'Camp Manager',
+            SUPERVISOR: 'Supervisor',
+            DONOR: 'Donor',
+        };
+
+        // --- UTILITY COMPONENTS (Icon components replaced with simple visual indicators) ---
+
+        const Card = ({ title, children, symbol, className = '' }) => (
+            <div className={`bg-white p-6 rounded-xl shadow-lg transition duration-300 hover:shadow-2xl ${className}`}>
+                <div className="flex items-center space-x-3 mb-4 border-b pb-2">
+                    {symbol && <span className="text-2xl text-indigo-600">{symbol}</span>}
+                    <h2 className="text-xl font-semibold text-gray-800">{title}</h2>
+                </div>
+                {children}
+            </div>
+        );
+
+        const Badge = ({ children, priority }) => {
+            let color = 'bg-gray-200 text-gray-800';
+            if (priority === 5) color = 'bg-red-500 text-white';
+            else if (priority === 4) color = 'bg-orange-500 text-white';
+            else if (priority === 3) color = 'bg-yellow-500 text-gray-900';
+            else if (priority === 'Pending') color = 'bg-red-100 text-red-800';
+            else if (priority === 'Dispatched') color = 'bg-blue-100 text-blue-800';
+            else if (priority === 'Fulfilled') color = 'bg-green-100 text-green-800';
+
+            return (
+                <span className={`inline-flex items-center px-3 py-0.5 rounded-full text-sm font-medium ${color}`}>
+                    {children}
+                </span>
+            );
+        };
+
+        // --- PAGE COMPONENTS ---
+
+        const ProjectCreditsCard = () => (
+            <Card title="Project Submission Details" symbol="🧑‍🎓" className="bg-blue-50 border-blue-200">
+                <div className="text-sm space-y-1 text-gray-700">
+                    <p><span className="font-semibold text-indigo-700">Submitted By:</span> {STUDENT_NAME}</p>
+                    <p><span className="font-semibold text-indigo-700">Registration No:</span> {REG_NUMBER}</p>
+                    <p><span className="font-semibold text-indigo-700">Branch & Subject:</span> {BRANCH_SUBJECT}</p>
+                    <p className="mt-3 text-xs text-gray-600 italic">
+                        This system simulates core data structures (Queue, Stack, Priority Queue, Graph) for a Smart Disaster Relief Supply Chain Management System (SDRSCMS).
+                    </p>
+                </div>
+            </Card>
+        );
+
+
+        const AdminDashboard = ({ centers, camps, urgentRequests, totalSupplies, logs }) => {
+            // LLM State
+            const [briefing, setBriefing] = useState('Click the button to generate a priority briefing for today.');
+            const [isLoadingBriefing, setIsLoadingBriefing] = useState(false);
+            
+            const totalPopulation = camps.reduce((sum, camp) => sum + camp.population, 0);
+            const totalCapacity = centers.reduce((sum, center) => sum + center.capacity, 0);
+
+            const StatCard = ({ title, value, symbol, color }) => (
+                <Card symbol={symbol} title={title} className="bg-gradient-to-br from-white to-gray-50 border border-gray-100">
+                    <p className={`text-4xl font-bold ${color}`}>{value}</p>
+                </Card>
+            );
+            
+            const handleGenerateBriefing = async () => {
+                setIsLoadingBriefing(true);
+                setBriefing('Generating daily operational briefing... Please wait.');
+                
+                const urgentReqsSummary = urgentRequests.map(r => 
+                    `Urgent: ${r.camp_id} needs ${r.qty}x ${r.type} (P${r.priority})`
+                ).join('; ');
+
+                const logSummary = logs.slice(-10).map(l => 
+                    `[${new Date(l.timestamp).toLocaleTimeString()}] ${l.action}`
+                ).join('\n');
+
+                const userQuery = `Current situation summary for SDRSCMS:
+Urgent Requests (${urgentRequests.length}): ${urgentReqsSummary || 'None.'}
+Recent System Logs (Last 10):
+${logSummary}
+Total affected population: ${totalPopulation}.
+
+Analyze this data and generate a professional, single-paragraph daily briefing for the Supervisor/Admin. Focus on critical priorities, potential resource gaps, and key operational activities required today.`;
+                
+                const systemPrompt = "You are a senior crisis management analyst. Your task is to review the provided disaster relief data and generate a concise, professional, single-paragraph operational briefing.";
+
+                try {
+                    const result = await callGeminiAPI(userQuery, systemPrompt);
+                    setBriefing(result);
+                } catch (error) {
+                    setBriefing(`Error generating briefing: ${error.message}`);
+                } finally {
+                    setIsLoadingBriefing(false);
+                }
+            };
+
+            return (
+                <div className="space-y-8">
+                    {/* NEW: Project Credits Card */}
+                    <ProjectCreditsCard />
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                        <StatCard title="Relief Centers" value={centers.length} symbol="🏭" color="text-indigo-600" />
+                        <StatCard title="Camps Established" value={camps.length} symbol="👥" color="text-teal-600" />
+                        <StatCard title="Urgent Requests" value={urgentRequests.length} symbol="⚠️" color="text-red-600" />
+                        <StatCard title="Total Inventory" value={`${totalSupplies} units`} symbol="📦" color="text-yellow-600" />
+                    </div>
+                    
+                    {/* LLM-POWERED FEATURE 1: Daily Briefing */}
+                    <Card title="✨ Daily Operational Briefing" symbol="🛡️" className="bg-indigo-50 border-indigo-200">
+                        <p className={`text-gray-700 mb-4 italic ${isLoadingBriefing ? 'animate-pulse' : ''}`}>{briefing}</p>
+                         <button
+                            onClick={handleGenerateBriefing}
+                            disabled={isLoadingBriefing}
+                            className="w-full bg-indigo-500 text-white p-2 rounded-lg font-semibold hover:bg-indigo-600 transition duration-150 shadow-md disabled:bg-gray-400"
+                        >
+                            <span className="flex items-center justify-center">
+                                {isLoadingBriefing ? 'Analyzing Data...' : '✨ Generate Daily Briefing'}
+                            </span>
+                        </button>
+                    </Card>
+
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <Card title="Urgent Requests Queue" symbol="📋" className="lg:col-span-2">
+                            <ul className="space-y-3">
+                                {urgentRequests.slice(0, 5).map(req => (
+                                    <li key={req.id} className="flex justify-between items-center p-3 bg-red-50 rounded-lg border-l-4 border-red-500">
+                                        <div className="text-sm">
+                                            <p className="font-medium text-gray-900">{req.camp_id} needs <span className="font-bold">{req.qty} {req.type}</span></p>
+                                            <p className="text-gray-500 text-xs">Requested: {new Date(req.requestDate).toLocaleTimeString()}</p>
+                                        </div>
+                                        <Badge priority={req.priority}>{req.priority} Priority</Badge>
+                                    </li>
+                                ))}
+                                {urgentRequests.length === 0 && <p className="text-gray-500 italic">No urgent requests currently.</p>}
+                            </ul>
+                        </Card>
+
+                        <Card title="System Activity Log (Stack Simulation)" symbol="⏰">
+                            <ul className="space-y-2 max-h-72 overflow-y-auto">
+                                {logs.slice(-5).reverse().map((log, index) => (
+                                    <li key={index} className="text-sm border-b pb-2 last:border-b-0">
+                                        <p className="font-medium text-gray-800">{log.action}</p>
+                                        <p className="text-xs text-gray-500">{new Date(log.timestamp).toLocaleTimeString()} by {log.user || 'System'}</p>
+                                    </li>
+                                ))}
+                            </ul>
+                        </Card>
+                    </div>
+                </div>
+            );
+        };
+
+        const SupplyManagementPage = ({ supplies, enqueueSupply, dequeueSupply, logs, pushLog, popLog, updateRequestStatus, requests }) => {
+            const { queue, size, isEmpty } = useSupplyQueue(supplies);
+            const { logs: dispatchLogs, pushLog: pushDispatchLog, popLog: popDispatchLog, size: logSize } = useDispatchStack(logs.filter(l => l.type === 'dispatch'));
+            const [newItem, setNewItem] = useState({ type: 'Water', quantity: 100, center_id: 1 });
+            const [message, setMessage] = useState('');
+
+            const handleEnqueue = () => {
+                const item = { ...newItem, id: Date.now(), center_id: parseInt(newItem.center_id) };
+                enqueueSupply(item);
+                pushLog({ type: 'inventory', action: `ENQUEUE: ${item.quantity} ${item.type} at Center ${item.center_id}`, entity: item.id, user: STUDENT_NAME }); // Logged by student name
+                setMessage(`Successfully enqueued ${item.quantity} units of ${item.type}.`);
+                setTimeout(() => setMessage(''), 3000);
+            };
+
+            const handleDispatch = () => {
+                const nextSupply = dequeueSupply();
+                if (nextSupply) {
+                    // Find a pending request to link this dispatch to (simple match for demo)
+                    const pendingRequest = requests.find(r => r.type === nextSupply.type && r.status === 'Pending');
+
+                    const logAction = `DISPATCH: ${nextSupply.quantity} ${nextSupply.type} from Center ${nextSupply.center_id}`;
+                    
+                    const logData = { 
+                        type: 'dispatch', 
+                        action: logAction, 
+                        entity: nextSupply.id, 
+                        user: 'Field Officer', 
+                        requestId: pendingRequest ? pendingRequest.id : null, 
+                        camp: pendingRequest ? pendingRequest.camp_id : 'Unknown Destination' 
+                    };
+                    
+                    pushDispatchLog(logData);
+                    pushLog(logData);
+
+                    if (pendingRequest) {
+                        updateRequestStatus(pendingRequest.id, 'Dispatched');
+                        setMessage(`${nextSupply.type} dispatched for Camp ${pendingRequest.camp_id}. FIFO in action!`);
+                    } else {
+                        setMessage(`${nextSupply.type} dispatched. No immediate pending request found.`);
+                    }
+                    setTimeout(() => setMessage(''), 3000);
+                } else {
+                    setMessage('Queue is empty. Cannot dispatch.');
+                    setTimeout(() => setMessage(''), 3000);
+                }
+            };
+
+            const handleUndo = () => {
+                if (dispatchLogs.length > 0) {
+                    const lastLog = popDispatchLog();
+                    pushLog({ type: 'undo', action: `UNDO: ${lastLog.action}`, entity: lastLog.entity, user: STUDENT_NAME }); // Logged by student name
+                    setMessage(`Undo successful. Rolled back last dispatch action.`);
+
+                    // Simulation: If a request was linked, revert its status
+                    if (lastLog.requestId) {
+                         updateRequestStatus(lastLog.requestId, 'Pending');
+                    }
+                    
+                    setTimeout(() => setMessage(''), 3000);
+                } else {
+                    setMessage('No recent dispatches to undo.');
+                    setTimeout(() => setMessage(''), 3000);
+                }
+            };
+
+            const handleChange = (e) => {
+                setNewItem({ ...newItem, [e.target.name]: e.target.value });
+            };
+
+            return (
+                <div className="space-y-6">
+                    <h1 className="text-3xl font-bold text-gray-900 mb-6">Supply Queue Management</h1>
+                    {message && (
+                        <div className="p-4 mb-4 text-sm text-green-700 bg-green-100 rounded-lg">
+                            {message}
+                        </div>
+                    )}
+                    
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        {/* ENQUEUE Form */}
+                        <Card title="Add New Supply Batch (Enqueue)" symbol="↩️" className="lg:col-span-1">
+                            <div className="space-y-4">
+                                <input
+                                    type="number"
+                                    name="quantity"
+                                    value={newItem.quantity}
+                                    onChange={handleChange}
+                                    placeholder="Quantity"
+                                    min="1"
+                                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"
+                                />
+                                <select
+                                    name="type"
+                                    value={newItem.type}
+                                    onChange={handleChange}
+                                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"
+                                >
+                                    {['Water', 'Food', 'Blankets', 'Tents', 'Meds', 'Hygiene Kits'].map(type => (
+                                        <option key={type} value={type}>{type}</option>
+                                    ))}
+                                </select>
+                                <select
+                                    name="center_id"
+                                    value={newItem.center_id}
+                                    onChange={handleChange}
+                                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"
+                                >
+                                    {LOCATIONS.filter(l => l.type === 'Center').map(center => (
+                                        <option key={center.id} value={center.id}>{center.name}</option>
+                                    ))}
+                                </select>
+                                <button
+                                    onClick={handleEnqueue}
+                                    className="w-full bg-indigo-600 text-white p-3 rounded-lg font-semibold hover:bg-indigo-700 transition duration-150 shadow-md"
+                                >
+                                    <span className="flex items-center justify-center">📦 Add to Queue</span>
+                                </button>
+                            </div>
+                        </Card>
+
+                        {/* DEQUEUE & UNDO Actions */}
+                        <Card title="Dispatch & Rollback Actions" symbol="🚚" className="lg:col-span-2">
+                            <div className="flex space-x-4 mb-6">
+                                <button
+                                    onClick={handleDispatch}
+                                    disabled={isEmpty}
+                                    className={`flex-1 flex items-center justify-center p-3 rounded-lg font-semibold transition duration-150 shadow-md ${isEmpty ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 text-white hover:bg-green-700'}`}
+                                >
+                                    <span className="flex items-center justify-center">📧 Dispatch Next Supply (Dequeue)</span>
+                                </button>
+                                <button
+                                    onClick={handleUndo}
+                                    disabled={dispatchLogs.length === 0}
+                                    className={`w-32 flex items-center justify-center p-3 rounded-lg font-semibold transition duration-150 shadow-md ${dispatchLogs.length === 0 ? 'bg-gray-400 cursor-not-allowed' : 'bg-orange-600 text-white hover:bg-orange-700'}`}
+                                >
+                                    <span>↩️ Undo</span>
+                                </button>
+                            </div>
+                            
+                            <h3 className="text-lg font-semibold mt-4 mb-2">Current Supply Queue (FIFO)</h3>
+                            <div className="max-h-64 overflow-y-auto bg-gray-50 p-3 rounded-lg border">
+                                {queue.map((item, index) => (
+                                    <div key={item.id} className={`flex justify-between items-center p-2 mb-1 rounded-md ${index === 0 ? 'bg-blue-100 font-bold border-blue-400 border-2' : 'bg-white border'}`}>
+                                        <div className="text-sm">
+                                            {index === 0 && <span className="text-blue-600 mr-2">NEXT:</span>}
+                                            {item.quantity} units of {item.type} from Center {item.center_id}
+                                        </div>
+                                        <Badge>{index + 1}</Badge>
+                                    </div>
+                                ))}
+                                {isEmpty && <p className="text-center text-gray-500 py-4">The supply queue is empty. Ready for new batches.</p>}
+                            </div>
+                        </Card>
+                    </div>
+                </div>
+            );
+        };
+
+        const RequestManagementPage = ({ requests, insertRequest, updateRequestStatus, locations }) => {
+            const { requests: prioritizedRequests, urgentRequests, size } = useRequestPriorityQueue(requests);
+            const [newRequest, setNewRequest] = useState({ camp_id: 'Camp X', type: 'Food', qty: 100, priority: 3, justification: '' });
+            const [isGenerating, setIsGenerating] = useState(false);
+
+
+            const handleInsert = () => {
+                const req = { 
+                    ...newRequest, 
+                    id: Date.now(), 
+                    qty: parseInt(newRequest.qty), 
+                    priority: parseInt(newRequest.priority), 
+                    status: 'Pending', 
+                    requestDate: new Date().toISOString()
+                };
+                insertRequest(req);
+                // Reset form state including justification
+                setNewRequest({ camp_id: 'Camp X', type: 'Food', qty: 100, priority: 3, justification: '' });
+            };
+
+            const handleFulfill = (id) => {
+                updateRequestStatus(id, 'Fulfilled');
+            };
+
+            const handleChange = (e) => {
+                setNewRequest({ ...newRequest, [e.target.name]: e.target.value });
+            };
+
+            const getPriorityText = (p) => {
+                switch(p) {
+                    case 5: return 'Urgent';
+                    case 4: return 'High';
+                    case 3: return 'Medium';
+                    case 2: return 'Low';
+                    default: return 'Minimal';
+                }
+            };
+            
+            // LLM-POWERED FEATURE 2: Justification Generator
+            const handleGenerateJustification = async () => {
+                setIsGenerating(true);
+                const camp = locations.find(l => l.name === newRequest.camp_id);
+                const population = camp ? camp.population : 'Unknown';
+                
+                const userQuery = `Generate a concise, formal justification paragraph for a disaster relief supply request. 
+                Request details: Camp=${newRequest.camp_id}, Population=${population}, Item=${newRequest.type}, Quantity=${newRequest.qty}, Priority=${newRequest.priority}. 
+                The tone must be urgent yet professional.`;
+                
+                const systemPrompt = "You are an AI assistant helping a Camp Manager write a strong justification for a critical supply request in a disaster zone. Output only the justification paragraph.";
+                
+                setNewRequest(prev => ({ ...prev, justification: 'Generating justification...' }));
+
+                try {
+                    const result = await callGeminiAPI(userQuery, systemPrompt);
+                    setNewRequest(prev => ({ ...prev, justification: result }));
+                } catch (error) {
+                    setNewRequest(prev => ({ ...prev, justification: `Error generating justification: ${error.message}` }));
+                } finally {
+                    setIsGenerating(false);
+                }
+            };
+
+
+            return (
+                <div className="space-y-6">
+                    <h1 className="text-3xl font-bold text-gray-900 mb-6">Camp Requests (Priority Queue)</h1>
+                    
+                    <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                        {/* Request Form */}
+                        <Card title="Submit New Request" symbol="⚠️" className="lg:col-span-1">
+                            <div className="space-y-4">
+                                <select
+                                    name="camp_id"
+                                    value={newRequest.camp_id}
+                                    onChange={handleChange}
+                                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500"
+                                >
+                                    {locations.filter(l => l.type === 'Camp').map(camp => (
+                                        <option key={camp.id} value={camp.name}>{camp.name}</option>
+                                    ))}
+                                </select>
+                                <select
+                                    name="type"
+                                    value={newRequest.type}
+                                    onChange={handleChange}
+                                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500"
+                                >
+                                    {['Food', 'Water', 'Blankets', 'Tents', 'Meds'].map(type => (
+                                        <option key={type} value={type}>{type}</option>
+                                    ))}
+                                </select>
+                                <input
+                                    type="number"
+                                    name="qty"
+                                    value={newRequest.qty}
+                                    onChange={handleChange}
+                                    placeholder="Quantity Required"
+                                    min="1"
+                                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500"
+                                />
+                                 <select
+                                    name="priority"
+                                    value={newRequest.priority}
+                                    onChange={handleChange}
+                                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500"
+                                >
+                                    {[5, 4, 3, 2, 1].map(p => (
+                                        <option key={p} value={p}>{p} - {getPriorityText(p)}</option>
+                                    ))}
+                                </select>
+                                 <textarea
+                                    name="justification"
+                                    rows="4"
+                                    value={newRequest.justification}
+                                    onChange={handleChange}
+                                    placeholder="Justification for this request (required for Priority 4/5)"
+                                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500"
+                                    disabled={isGenerating}
+                                />
+
+                                 <button
+                                    onClick={handleGenerateJustification}
+                                    disabled={isGenerating}
+                                    className="w-full bg-red-400 text-white p-2 rounded-lg font-semibold hover:bg-red-500 transition duration-150 shadow-md disabled:bg-gray-400"
+                                >
+                                    <span className="flex items-center justify-center">
+                                        {isGenerating ? 'Drafting...' : '✨ Generate Justification'}
+                                    </span>
+                                </button>
+
+                                <button
+                                    onClick={handleInsert}
+                                    className="w-full bg-red-600 text-white p-3 rounded-lg font-semibold hover:bg-red-700 transition duration-150 shadow-md"
+                                >
+                                    <span className="flex items-center justify-center">⚡ Submit Request</span>
+                                </button>
+                            </div>
+                        </Card>
+
+                        {/* Prioritized Requests List */}
+                        <Card title={`Prioritized Requests (${size})`} symbol="🔢" className="lg:col-span-3">
+                            <div className="max-h-96 overflow-y-auto space-y-3">
+                                {prioritizedRequests.map((req, index) => (
+                                    <div key={req.id} className={`flex flex-col p-3 rounded-lg border-l-4 ${req.priority >= 4 ? 'bg-red-50 border-red-500' : 'bg-white border-blue-500 border'}`}>
+                                        <div className="flex justify-between items-start">
+                                            <div className="text-sm">
+                                                <p className="font-bold text-gray-900">{req.camp_id}: {req.qty} x {req.type}</p>
+                                                <p className="text-xs text-gray-500">Priority: <span className="font-semibold">{getPriorityText(req.priority)}</span> | Status: <Badge priority={req.status}>{req.status}</Badge></p>
+                                            </div>
+                                            {req.status === 'Dispatched' && (
+                                                <button 
+                                                    onClick={() => handleFulfill(req.id)}
+                                                    className="bg-green-500 text-white text-xs px-3 py-1 rounded-full hover:bg-green-600 transition"
+                                                >
+                                                    <span className="mr-1">✅</span> Mark Fulfilled
+                                                </button>
+                                            )}
+                                            {req.status === 'Pending' && (
+                                                <Badge priority={req.priority}>{getPriorityText(req.priority)}</Badge>
+                                            )}
+                                            {req.status === 'Fulfilled' && (
+                                                <Badge priority={req.status}>Done</Badge>
+                                            )}
+                                        </div>
+                                        {req.justification && (
+                                            <p className="mt-2 pt-2 border-t text-xs text-gray-700 italic">Justification: {req.justification.substring(0, 100)}...</p>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </Card>
+                    </div>
+                </div>
+            );
+        };
+
+        const RoutingPage = ({ locations }) => {
+            const [startNode, setStartNode] = useState('Center A');
+            const [endNode, setEndNode] = useState('Camp X');
+            const [result, setResult] = useState(null);
+            // NEW LLM STATE
+            const [dispatchInstructions, setDispatchInstructions] = useState(null);
+            const [isLoadingInstructions, setIsLoadingInstructions] = useState(false);
+
+            const handleComputeRoute = () => {
+                const routeResult = dijkstraShortestPath(startNode, endNode);
+                setResult(routeResult);
+                setDispatchInstructions(null); // Clear old instructions
+            };
+            
+            // NEW LLM FUNCTION: Generate Critical Dispatch Instructions
+            const handleGenerateInstructions = async () => {
+                if (!result) return;
+                setIsLoadingInstructions(true);
+                setDispatchInstructions('Generating critical dispatch instructions...');
+                
+                // Mock risk context for better instructions
+                const riskContext = endNode === 'Camp X' ? 'Camp X has reported heavy rain and mudslides on approach roads, requiring 4x4 vehicles.' : 'Route conditions are reported as normal, but visibility may be low at night.';
+
+                const userQuery = `Generate a set of 4 critical, bullet-pointed dispatch and safety instructions for a Field Officer.
+                Route Details: Start=${startNode}, End=${endNode}, Path=${result.route}, Distance=${result.distance}, ETA=${result.duration}.
+                Context: ${riskContext} The priority is safety and speed. Output the instructions as a markdown bulleted list.`;
+
+                const systemPrompt = "You are the Senior Dispatch Coordinator. Write concise (max 15 words per bullet), critical, and actionable instructions for a supply delivery driver. Focus on checkpoints, potential hazards, and communication protocols.";
+
+                try {
+                    const resultText = await callGeminiAPI(userQuery, systemPrompt);
+                    setDispatchInstructions(resultText);
+                } catch (error) {
+                    setDispatchInstructions(`Error generating instructions: ${error.message}`);
+                } finally {
+                    setIsLoadingInstructions(false);
+                }
+            };
+
+            const nodes = locations.map(l => l.name);
+            
+            // Mock Map component - Actual Mapbox/Leaflet would be used here
+            const MockMap = () => (
+                <div className="relative w-full h-96 bg-gray-200 rounded-lg shadow-inner overflow-hidden flex items-center justify-center">
+                    <span className="text-6xl text-gray-400 absolute inset-0 m-auto">🗺️</span>
+                    <div className="absolute top-4 left-4 p-2 bg-white rounded-lg shadow-md border-2 border-indigo-500 font-mono text-sm">
+                        <p>Map Integration Placeholder</p>
+                        <p>Showing: {startNode} to {endNode}</p>
+                    </div>
+                    
+                    {result && (
+                        <div className="absolute bottom-4 p-4 bg-indigo-600 text-white rounded-xl shadow-2xl animate-pulse-slow">
+                            <p className="font-bold text-lg">ROUTE FOUND: {result.route}</p>
+                            <p>Distance: {result.distance} | ETA: {result.duration}</p>
+                        </div>
+                    )}
+                    
+                    {locations.map(loc => (
+                        <div 
+                            key={loc.id} 
+                            className={`absolute rounded-full w-3 h-3 ${loc.type === 'Center' ? 'bg-blue-600 ring-4 ring-blue-300' : 'bg-red-600 ring-4 ring-red-300'}`} 
+                            style={{ 
+                                // Simplified mock positioning
+                                left: `${(loc.lng + 118.5) * 200}%`, 
+                                top: `${(34.2 - loc.lat) * 200}%`
+                            }}
+                        >
+                            <span className="absolute -top-6 whitespace-nowrap text-xs font-semibold">{loc.name}</span>
+                        </div>
+                    ))}
+                </div>
+            );
+
+            return (
+                <div className="space-y-6">
+                    <h1 className="text-3xl font-bold text-gray-900 mb-6">Delivery Routing (Dijkstra Simulation)</h1>
+                    
+                    <Card title="Compute Shortest Path" symbol="📍">
+                        <div className="flex flex-col md:flex-row space-y-4 md:space-y-0 md:space-x-4 mb-6">
+                            <div className="w-full md:w-1/3">
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Start Node (Center/Camp)</label>
+                                <select
+                                    value={startNode}
+                                    onChange={(e) => setStartNode(e.target.value)}
+                                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"
+                                >
+                                    {nodes.map(node => (
+                                        <option key={node} value={node}>{node}</option>
+                                    ))}
+                                </select>
+                            </div>
+                            
+                            <div className="w-full md:w-1/3">
+                                <label className="block text-sm font-medium text-gray-700 mb-1">End Node (Camp/Center)</label>
+                                <select
+                                    value={endNode}
+                                    onChange={(e) => setEndNode(e.target.value)}
+                                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"
+                                >
+                                    {nodes.map(node => (
+                                        <option key={node} value={node}>{node}</option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            <div className="w-full md:w-1/3 flex items-end">
+                                 <button
+                                    onClick={handleComputeRoute}
+                                    className="w-full bg-indigo-600 text-white p-3 rounded-lg font-semibold hover:bg-indigo-700 transition duration-150 shadow-md h-[47px]"
+                                >
+                                    <span className="flex items-center justify-center">⚡ Calculate Route</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        {result && (
+                            <div className="mt-4 p-4 bg-gray-50 border border-gray-200 rounded-lg">
+                                <h3 className="text-xl font-bold text-gray-800">Shortest Path Result:</h3>
+                                <p className="text-lg mt-1"><span className="font-semibold text-indigo-600">Route:</span> {result.route}</p>
+                                <p className="text-lg"><span className="font-semibold text-indigo-600">Distance:</span> {result.distance}</p>
+                                <p className="text-lg"><span className="font-semibold text-indigo-600">Estimated Duration:</span> {result.duration}</p>
+                            </div>
+                        )}
+                    </Card>
+
+                    {/* LLM-POWERED FEATURE 3: Critical Dispatch Instructions */}
+                    {result && (
+                        <Card title="✨ Critical Dispatch Instructions" symbol="🚚" className="mt-6 bg-yellow-50 border-yellow-200">
+                            {dispatchInstructions && (
+                                <div className={`text-sm text-gray-700 whitespace-pre-line mb-4 ${isLoadingInstructions ? 'animate-pulse' : ''}`}>
+                                    {dispatchInstructions}
+                                </div>
+                            )}
+                            <button
+                                onClick={handleGenerateInstructions}
+                                disabled={isLoadingInstructions}
+                                className="w-full bg-yellow-600 text-white p-2 rounded-lg font-semibold hover:bg-yellow-700 transition duration-150 shadow-md disabled:bg-gray-400"
+                            >
+                                <span className="flex items-center justify-center">
+                                    {isLoadingInstructions ? 'Drafting Instructions...' : '✨ Generate Dispatch Instructions'}
+                                </span>
+                            </button>
+                        </Card>
+                    )}
+
+                    <MockMap />
+                </div>
+            );
+        };
+
+        const ReportsPage = ({ requests }) => {
+            
+            // Simple bar chart simulation data
+            const requestStatusCounts = requests.reduce((acc, req) => {
+                acc[req.status] = (acc[req.status] || 0) + 1;
+                return acc;
+            }, {});
+            
+            const chartData = [
+                { name: 'Pending', value: requestStatusCounts.Pending || 0, color: 'bg-red-500' },
+                { name: 'Dispatched', value: requestStatusCounts.Dispatched || 0, color: 'bg-blue-500' },
+                { name: 'Fulfilled', value: requestStatusCounts.Fulfilled || 0, color: 'bg-green-500' },
+            ];
+            
+            const totalRequests = chartData.reduce((sum, item) => sum + item.value, 0);
+
+            return (
+                <div className="space-y-6">
+                    <h1 className="text-3xl font-bold text-gray-900 mb-6">Analytics & Reporting</h1>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <Card title="Request Status Breakdown" symbol="📈">
+                            <div className="space-y-4">
+                                <p className="text-3xl font-bold text-gray-800">Total Requests: {totalRequests}</p>
+                                <div className="h-64 flex flex-col justify-end p-4 border rounded-lg bg-gray-50">
+                                    <div className="flex h-full items-end justify-around">
+                                        {chartData.map(item => (
+                                            <div key={item.name} className="flex flex-col items-center h-full justify-end">
+                                                <div 
+                                                    className={`${item.color} w-8 rounded-t-lg transition-all duration-700`}
+                                                    style={{ height: `${item.value / totalRequests * 100 * 0.7 + 20}%` }}
+                                                    title={`${item.name}: ${item.value}`}
+                                                >
+                                                    <span className="text-xs text-white font-bold block text-center pt-1">{item.value}</span>
+                                                </div>
+                                                <p className="text-sm font-medium mt-1">{item.name}</p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        </Card>
+
+                        <Card title="Exportable Reports" symbol="🧾">
+                            <div className="space-y-4">
+                                <div className="p-4 border rounded-lg bg-yellow-50">
+                                    <h3 className="font-semibold text-lg">Delivery Analytics Report</h3>
+                                    <p className="text-sm text-gray-600">Detailed breakdown of all dispatched items, routes, and fulfillment times.</p>
+                                    <button className="mt-3 bg-yellow-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-yellow-700 transition">
+                                        Generate & Export CSV
+                                    </button>
+                                </div>
+                                <div className="p-4 border rounded-lg bg-blue-50">
+                                    <h3 className="font-semibold text-lg">Center Inventory Report</h3>
+                                    <p className="text-sm text-gray-600">Current stock levels and capacity utilization for all relief centers.</p>
+                                     <button className="mt-3 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700 transition">
+                                        Generate & Export PDF
+                                    </button>
+                                </div>
+                            </div>
+                        </Card>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- AUTH & MAIN APP LAYOUT ---
+
+        const Login = ({ setUserRole }) => {
+            const [selectedRole, setSelectedRole] = useState(ROLES.ADMIN);
+            const [password, setPassword] = useState('password');
+
+            const handleLogin = (e) => {
+                e.preventDefault();
+                // Mock JWT check: only 'password' works
+                if (password === 'password') {
+                    setUserRole(selectedRole);
+                } else {
+                    console.error('Mock Login Failed: Use "password"');
+                }
+            };
+
+            return (
+                <div className="min-h-screen flex items-center justify-center bg-gray-100 p-4">
+                    <Card title="SDRSCMS Login" symbol="🔑" className="w-full max-w-md">
+                        <p className="text-gray-500 mb-6 text-center">Select your role to access the system.</p>
+                        <form onSubmit={handleLogin} className="space-y-4">
+                            <div>
+                                <label htmlFor="role" className="block text-sm font-medium text-gray-700">User Role</label>
+                                <select
+                                    id="role"
+                                    value={selectedRole}
+                                    onChange={(e) => setSelectedRole(e.target.value)}
+                                    className="mt-1 w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"
+                                >
+                                    {Object.values(ROLES).map(role => (
+                                        <option key={role} value={role}>{role}</option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div>
+                                <label htmlFor="password" className="block text-sm font-medium text-gray-700">Password (Use 'password')</label>
+                                <input
+                                    id="password"
+                                    type="password"
+                                    value={password}
+                                    onChange={(e) => setPassword(e.target.value)}
+                                    required
+                                    className="mt-1 w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"
+                                />
+                            </div>
+                            <button
+                                type="submit"
+                                className="w-full bg-indigo-600 text-white p-3 rounded-lg font-semibold hover:bg-indigo-700 transition duration-150 shadow-md"
+                            >
+                                Login as {selectedRole}
+                            </button>
+                        </form>
+                    </Card>
+                </div>
+            );
+        };
+
+        // Main App Component
+        const App = () => {
+            const [userRole, setUserRole] = useState(null);
+            const [currentPage, setCurrentPage] = useState('Dashboard');
+            const [systemLogs, setSystemLogs] = useState([]); 
+            
+            // Core Logic Hooks
+            const { queue, enqueue: enqueueSupply, dequeue: dequeueSupply } = useSupplyQueue(INITIAL_SUPPLIES);
+            const { requests, insertRequest, updateRequestStatus, urgentRequests } = useRequestPriorityQueue(INITIAL_REQUESTS);
+            const { pushLog: pushDispatchLog, logs: dispatchLogs, popLog: popDispatchLog } = useDispatchStack([]);
+            
+            const totalSupplies = queue.reduce((sum, item) => sum + item.quantity, 0);
+
+            // Function to centralize log updates
+            const pushLog = (log) => {
+                setSystemLogs(prev => [...prev, log]);
+            };
+            
+            // Prop preparation
+            const supplyManagementProps = {
+                supplies: queue,
+                enqueueSupply,
+                dequeueSupply,
+                logs: dispatchLogs, 
+                pushLog: pushDispatchLog, 
+                popLog: popDispatchLog, 
+                updateRequestStatus,
+                requests,
+            };
+            
+            const dashboardProps = { 
+                centers: LOCATIONS.filter(l => l.type === 'Center'), 
+                camps: LOCATIONS.filter(l => l.type === 'Camp'), 
+                urgentRequests, 
+                totalSupplies, 
+                logs: systemLogs 
+            };
+            
+            const navigationMap = {
+                'Dashboard': { name: 'Dashboard', component: AdminDashboard, symbol: '🛡️', props: dashboardProps },
+                'Supply Management': { name: 'Supply Management', component: SupplyManagementPage, symbol: '🏭', props: supplyManagementProps },
+                'Requests & Prioritization': { name: 'Requests & Prioritization', component: RequestManagementPage, symbol: '⚡', props: { requests, insertRequest, updateRequestStatus, locations: LOCATIONS } },
+                'Routing & Dispatch': { name: 'Routing & Dispatch', component: RoutingPage, symbol: '🗺️', props: { locations: LOCATIONS } },
+                'Reports & Analytics': { name: 'Reports & Analytics', component: ReportsPage, symbol: '📈', props: { requests } },
+            };
+
+            // Define navigation based on role
+            const getNavigation = (role) => {
+                const nav = [];
+                switch (role) {
+                    case ROLES.ADMIN:
+                    case ROLES.SUPERVISOR:
+                        nav.push(navigationMap.Dashboard, navigationMap['Supply Management'], navigationMap['Requests & Prioritization'], navigationMap['Routing & Dispatch'], navigationMap['Reports & Analytics']);
+                        break;
+                    case ROLES.CAMPMANAGER:
+                        nav.push(navigationMap['Requests & Prioritization']);
+                        // Camp Managers should see a dashboard related to their camp's needs. We clone the dashboard object 
+                        // and give it a unique key by concatenating the name with the role, even though the component is the same.
+                        nav.push({ 
+                            ...navigationMap.Dashboard, 
+                            name: 'Camp Dashboard', // Use a unique name for the key/display
+                            key: 'Camp Dashboard-' + role, // Unique key
+                            props: { ...dashboardProps, urgentRequests: requests.filter(r => r.camp_id === 'Camp X') } 
+                        });
+                        break;
+                    case ROLES.FIELDOFFICER:
+                        nav.push(navigationMap['Routing & Dispatch'], navigationMap['Supply Management']);
+                        break;
+                    case ROLES.DONOR:
+                        nav.push(navigationMap['Reports & Analytics']);
+                        break;
+                    default:
+                        return [];
+                }
+                return nav;
+            };
+            
+            const navigation = getNavigation(userRole);
+            const CurrentItem = navigation.find(nav => nav.name === currentPage || nav.key === currentPage);
+            const CurrentComponent = CurrentItem?.component;
+            const currentProps = CurrentItem?.props;
+
+            if (!userRole) {
+                return <Login setUserRole={setUserRole} />;
+            }
+            
+            // Set the page when switching between items with the same component (like Dashboard for Admin/Camp Manager)
+            const handleNavClick = (itemName, itemKey) => {
+                // Use itemKey if provided (for duplicated component names) otherwise use itemName
+                setCurrentPage(itemKey || itemName);
+            };
+
+            return (
+                <div className="flex min-h-screen bg-gray-50">
+                    {/* Sidebar Navigation */}
+                    <div className="w-64 bg-white shadow-xl flex flex-col fixed h-full z-10">
+                        <div className="p-6 border-b">
+                            <h1 className="text-2xl font-extrabold text-indigo-700">SDRSCMS</h1>
+                            <p className="text-xs text-gray-500 mt-1">Smart Disaster Relief</p>
+                        </div>
+                        <div className="p-4 flex flex-col space-y-2 flex-grow">
+                            <p className="text-sm font-semibold text-gray-600 mt-2 mb-2">Role: {userRole}</p>
+                            {navigation.map((item) => (
+                                <button
+                                    key={item.key || item.name} // Use unique key or default name
+                                    onClick={() => handleNavClick(item.name, item.key)}
+                                    className={`flex items-center space-x-3 p-3 rounded-xl transition duration-150 ${
+                                        (currentPage === item.name || currentPage === item.key)
+                                            ? 'bg-indigo-100 text-indigo-700 font-bold shadow-sm'
+                                            : 'text-gray-600 hover:bg-gray-100'
+                                    }`}
+                                >
+                                    <span className="text-xl w-6 h-6 flex items-center justify-center">{item.symbol}</span>
+                                    <span>{item.name}</span>
+                                </button>
+                            ))}
+                        </div>
+                        <div className="p-4 border-t">
+                            <button
+                                onClick={() => setUserRole(null)}
+                                className="w-full flex items-center justify-center space-x-2 p-3 rounded-xl text-red-600 hover:bg-red-50 transition duration-150"
+                            >
+                                <span className="text-xl transform rotate-180">🚪</span>
+                                <span>Logout</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Main Content Area */}
+                    <div className="flex-1 ml-64 p-8">
+                        <div className="container mx-auto">
+                            {/* Render the current page component */}
+                            {CurrentComponent ? (
+                                <CurrentComponent {...currentProps} />
+                            ) : (
+                                <div className="text-center py-12">
+                                    <span className="text-6xl text-red-500">❌</span>
+                                    <h2 className="text-2xl font-semibold mt-4">Page Not Found</h2>
+                                    <p className="text-gray-500">The requested view is unavailable for your role.</p>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // Render the main App component into the root DOM element
+        const container = document.getElementById('root');
+        const root = ReactDOM.createRoot(container);
+        root.render(<App />);
+    </script>
+</body>
 </html>
